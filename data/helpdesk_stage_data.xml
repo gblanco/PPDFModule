@@ -7,14 +7,14 @@
             <field name="team_ids" eval="[(4, ref('helpdesk.team_helpdesk'))]"/>
         </record>
 
-        <record id="stage_sin_adjuntos" model="helpdesk.stage">
-            <field name="name">Sin Adjuntos</field>
+        <record id="stage_tickets_sin_pdf" model="helpdesk.stage">
+            <field name="name">Tickets sin PDF</field>
             <field name="sequence">2</field>
             <field name="team_ids" eval="[(4, ref('helpdesk.team_helpdesk'))]"/>
         </record>
 
-        <record id="stage_facturas_sin_po" model="helpdesk.stage">
-            <field name="name">Facturas sin PO</field>
+        <record id="stage_pdf_sin_po" model="helpdesk.stage">
+            <field name="name">PDF sin PO#</field>
             <field name="sequence">3</field>
             <field name="team_ids" eval="[(4, ref('helpdesk.team_helpdesk'))]"/>
         </record>
