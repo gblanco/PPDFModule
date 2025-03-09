@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_helpdesk_ticket_form_inherit_bmi" model="ir.ui.view">
+        <field name="name">helpdesk.ticket.form.inherit.bmi</field>
+        <field name="model">helpdesk.ticket</field>
+        <field name="inherit_id" ref="helpdesk.helpdesk_ticket_view_form"/>
+        <field name="arch" type="xml">
+            <header position="inside">
+                <button name="procesar_facturas"
+                        string="Procesar Facturas Nuevas"
+                        type="object"
+                        class="oe_highlight"
+                        groups="helpdesk.group_helpdesk_user"/>
+            </header>
+        </field>
+    </record>
+</odoo>
