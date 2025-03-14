@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <!-- Add Process Button to Helpdesk Ticket Form View -->
     <record id="view_helpdesk_ticket_form_inherit_bmi" model="ir.ui.view">
         <field name="name">helpdesk.ticket.form.inherit.bmi</field>
         <field name="model">helpdesk.ticket</field>
@@ -7,11 +8,45 @@
         <field name="arch" type="xml">
             <header position="inside">
                 <button name="procesar_facturas"
-                        string="Procesar Facturas Nuevas"
                         type="object"
+                        string="Procesar Facturas Nuevas"
+                        attrs="{'invisible': [('id', '=', False)]}"
                         class="oe_highlight"
                         groups="helpdesk.group_helpdesk_user"/>
             </header>
         </field>
+    </record>
+
+    <!-- Server Action to Process First 10 Tickets -->
+    <record id="action_process_first_10_tickets" model="ir.actions.server">
+        <field name="name">Procesar Primeros 10 Tickets</field>
+        <field name="model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_view_types">kanban,list</field>
+        <field name="state">code</field>
+        <field name="code">
+facturas_nuevas_stage = env['helpdesk.stage'].search([('name', '=', 'Facturas nuevas')], limit=1)
+if facturas_nuevas_stage:
+    tickets = env['helpdesk.ticket'].search([
+        ('stage_id', '=', facturas_nuevas_stage.id)
+    ], limit=10)
+
+    if tickets:
+        tickets.procesar_facturas()
+        message = f'Se han procesado {len(tickets)} tickets'
+    else:
+        message = 'No se encontraron tickets con estado "Facturas nuevas".'
+
+    action = {
+        'type': 'ir.actions.client',
+        'tag': 'display_notification',
+        'params': {
+            'title': 'Tickets Procesados',
+            'message': message,
+            'sticky': False,
+            'type': 'success',
+        }
+    }
+</field>
     </record>
 </odoo>

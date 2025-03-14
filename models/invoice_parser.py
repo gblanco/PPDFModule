@@ -1,5 +1,6 @@
 import base64
 import re
+import logging
 from io import BytesIO
 from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
 from pdfminer.converter import TextConverter
@@ -8,6 +9,8 @@ from pdfminer.pdfpage import PDFPage
 from io import StringIO
 from odoo import models, fields, api
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 
 class InvoiceParser(models.Model):
@@ -19,38 +22,71 @@ class InvoiceParser(models.Model):
     x_total_amount = fields.Float(string='Total Amount')
     x_iva_amount = fields.Float(string='IVA Amount')
 
-    @api.model
     def procesar_facturas(self):
-        # Get all tickets in 'Facturas nuevas' state for 'Pago a Proveedores' team
-        pago_proveedores_team = self.env['helpdesk.team'].search([
-            ('alias_name', '=', 'proveedores'),
-            ('alias_domain', '=', 'bmisa.odoo.com')
-        ], limit=1)
-        
-        if not pago_proveedores_team:
+        """
+        Process invoices for tickets with 'Facturas nuevas' status
+        This method works on recordsets and is called directly from record
+        :return: Boolean indicating success
+        """
+        if not self:
+            # Get all tickets in 'Facturas nuevas' state for 'Pago a Proveedores' team
+            pago_proveedores_team = self.env['helpdesk.team'].search([
+                ('alias_name', '=', 'proveedores'),
+                ('alias_domain', '=', 'bmisa.odoo.com')
+            ], limit=1)
+
+            if not pago_proveedores_team:
+                return False
+
+            tickets = self.search([
+                ('team_id', '=', pago_proveedores_team.id),
+                ('stage_id.name', '=', 'Facturas Nuevas')
+            ])
+        else:
+            tickets = self
+
+        return self._procesar_tickets(tickets)
+
+    def _procesar_tickets(self, tickets):
+        """
+        Process a recordset of tickets
+        :param tickets: helpdesk.ticket recordset
+        :return: Boolean indicating success
+        """
+        if not tickets:
+            _logger.info("No hay tickets para procesar")
             return False
-            
-        tickets = self.search([
-            ('team_id', '=', pago_proveedores_team.id),
-            ('stage_id.name', '=', 'Facturas nuevas')
-        ])
+
+        _logger.info(f"Procesando {len(tickets)} tickets")
 
         # Get stage IDs for status changes
         sin_pdf_stage = self.env['helpdesk.stage'].search([
             ('name', '=', 'Tickets sin PDF')
         ], limit=1)
-        
+
         sin_po_stage = self.env['helpdesk.stage'].search([
             ('name', '=', 'PDF sin PO#')
         ], limit=1)
-        
-        if not sin_pdf_stage or not sin_po_stage:
-            raise UserError("Required stages 'Tickets sin PDF' or 'PDF sin PO#' not found")
+
+        # If stages are not found, try to create them
+        if not sin_pdf_stage:
+            sin_pdf_stage = self.env['helpdesk.stage'].create({
+                'name': 'Tickets sin PDF',
+                'sequence': 2,
+            })
+            self._cr.commit()  # Commit to ensure stage is created
+
+        if not sin_po_stage:
+            sin_po_stage = self.env['helpdesk.stage'].create({
+                'name': 'PDF sin PO#',
+                'sequence': 3,
+            })
+            self._cr.commit()  # Commit to ensure stage is created
 
         for ticket in tickets:
             has_pdf = False
             pdf_attachments = []
-            
+
             # Check for PDFs in chatter messages
             for message in ticket.message_ids:
                 message_attachments = self.env['ir.attachment'].search([
@@ -58,22 +94,22 @@ class InvoiceParser(models.Model):
                     ('res_id', '=', message.id),
                     ('mimetype', '=', 'application/pdf')
                 ])
-                
+
                 if message_attachments:
                     has_pdf = True
                     pdf_attachments.extend(message_attachments)
-            
+
             # Also check for PDFs directly attached to the ticket
             ticket_attachments = self.env['ir.attachment'].search([
                 ('res_model', '=', 'helpdesk.ticket'),
                 ('res_id', '=', ticket.id),
                 ('mimetype', '=', 'application/pdf')
             ])
-            
+
             if ticket_attachments:
                 has_pdf = True
                 pdf_attachments.extend(ticket_attachments)
-                
+
             if not has_pdf:
                 # If no PDF attachments found, change state to 'Tickets sin PDF'
                 ticket.write({
@@ -81,7 +117,7 @@ class InvoiceParser(models.Model):
                 })
                 # Log the change in chatter
                 ticket.message_post(
-                    body="Ticket moved to 'Tickets sin PDF' - No PDF attachments found in messages"
+                    body="Ticket movido a 'Tickets sin PDF' - No se encontraron adjuntos PDF en los mensajes"
                 )
             else:
                 # Process each PDF attachment
@@ -91,18 +127,18 @@ class InvoiceParser(models.Model):
                     if result:
                         po_found = True
                         break
-                
+
                 # If no PO was found in any of the PDFs, move to 'PDF sin PO#'
                 if not po_found and ticket.stage_id.id != sin_po_stage.id:
                     ticket.write({
                         'stage_id': sin_po_stage.id
                     })
                     ticket.message_post(
-                        body="Ticket moved to 'PDF sin PO#' - No valid PO found in any PDF"
+                        body="Ticket movido a 'PDF sin PO#' - No se encontró OC válida en ningún PDF"
                     )
 
         return True
-        
+
     def process_invoice_pdf(self, ticket, attachment, sin_po_stage):
         """
         Process a PDF invoice attachment
@@ -119,51 +155,188 @@ class InvoiceParser(models.Model):
             else:
                 # For attachments directly on the ticket
                 pdf_content = base64.b64decode(attachment.datas)
-                
+
             pdf_file = BytesIO(pdf_content)
 
             # Extract text from PDF
             text_content = self.convert_pdf_to_text(pdf_file)
 
-            # Search for PO number
-            po_pattern = r'(?:P\.O\.|PO|Purchase Order)[:\s#]*([A-Z0-9][-A-Z0-9]*)'
-            po_match = re.search(po_pattern, text_content, re.IGNORECASE)
+            # Handle the "Pedido de compra #P03351" format specifically
+            pedido_pattern = r'pedido de compra[^\n]*?#P([0-9]{4,})'
+            pedido_match = re.search(pedido_pattern, text_content, re.IGNORECASE)
+            if pedido_match:
+                pedido_po = pedido_match.group(1).strip()
+                _logger.info(f"Encontrada referencia especial de 'Pedido de compra': #P{pedido_po}")
 
-            if not po_match:
+                # Check if this specific PO exists
+                pedido_purchase_order = self.env['purchase.order'].search([
+                    '|', '|',
+                    ('name', '=ilike', f"P{pedido_po}"),
+                    ('name', '=ilike', f"#P{pedido_po}"),
+                    ('name', '=ilike', pedido_po)
+                ], limit=1)
+
+                if pedido_purchase_order:
+                    _logger.info(f"OC coincidente encontrada para 'Pedido de compra': {pedido_purchase_order.name}")
+                    purchase_order = pedido_purchase_order
+                    po_number = pedido_po
+                    original_po = f"#P{pedido_po}"
+
+                    # Extract invoice data and create invoice
+                    invoice_data = self.extract_invoice_data(text_content, po_number)
+                    invoice = self.create_draft_invoice(ticket, invoice_data, purchase_order, attachment)
+                    return True if invoice else False
+
+            # Extract PO number
+            po_number = self.extract_po_number(text_content)
+
+            if not po_number:
                 # No PO found in this PDF
                 ticket.message_post(
-                    body=f"No PO number found in PDF: {attachment.name}"
+                    body=f"No se encontró número de OC en el PDF: {attachment.name}<br/>"
+                         f"Por favor, verifique si esta factura contiene una referencia de orden de compra."
                 )
                 return False
 
-            # Extract PO number
-            po_number = po_match.group(1).strip()
-            
+            original_po = po_number
+
+            # Clean up potential prefixes in the PO number
+            if po_number.startswith('#'):
+                po_number = po_number[1:]
+
+            # Strip additional characters that might be present
+            po_number = re.sub(r'^[^A-Z0-9]+', '', po_number, flags=re.IGNORECASE)
+
+            # Log the PO number extraction
+            _logger.info(f"Extracción de OC del PDF: Coincidencia original: {original_po}, Limpio: {po_number}")
+
+            # Create versions of the PO number to search for
+            search_variants = [
+                po_number,
+                'P' + po_number if not po_number.startswith('P') else po_number,
+                '#P' + po_number if not po_number.startswith('#P') else po_number,
+                '#PO' + po_number if not po_number.startswith('#PO') else po_number,
+                po_number.lstrip('P'),  # In case the PO is stored without the P prefix
+                po_number.lstrip('#P'),  # In case the PO is stored without the #P prefix
+                po_number.lstrip('#PO')  # In case the PO is stored without the #PO prefix
+            ]
+
+            # Remove duplicates and empty strings
+            search_variants = [v for v in set(search_variants) if v]
+
+            # Build domain for search
+            domain = []
+            for variant in search_variants:
+                domain.append(('name', '=ilike', variant))
+
+            if len(domain) > 1:
+                domain = ['|'] * (len(domain) - 1) + domain
+
             # Verify the PO exists in the system
-            purchase_order = self.env['purchase.order'].search([
-                ('name', '=ilike', po_number)
-            ], limit=1)
-            
+            purchase_order = self.env['purchase.order'].search(domain, limit=1)
+
+            if purchase_order:
+                _logger.info(f"OC coincidente encontrada: {purchase_order.name}")
+            else:
+                _logger.warning(f"No se encontró OC coincidente para las variantes: {search_variants}")
+
+                # Try a more permissive search
+                number_only = re.sub(r'[^0-9]', '', po_number)
+                if number_only and len(number_only) >= 4:
+                    _logger.info(f"Intentando búsqueda solo por números con: {number_only}")
+                    # Search for POs containing this number sequence
+                    purchase_order = self.env['purchase.order'].search([
+                        ('name', 'ilike', number_only)
+                    ], limit=1)
+
+                    if purchase_order:
+                        _logger.info(f"OC coincidente encontrada con búsqueda solo por números: {purchase_order.name}")
+
+            if not purchase_order:
+                # Try with a more extended search for patterns like "#P03351" where # might be treated as a comment in regex
+                extended_search_variants = search_variants + [
+                    f"P{po_number}" if po_number.isdigit() else po_number,
+                    f"PO{po_number}" if po_number.isdigit() else po_number
+                ]
+                extended_search_variants = list(set(extended_search_variants))
+
+                extended_domain = []
+                for variant in extended_search_variants:
+                    if variant:
+                        extended_domain.append(('name', 'ilike', variant))
+
+                if len(extended_domain) > 1:
+                    extended_domain = ['|'] * (len(extended_domain) - 1) + extended_domain
+
+                purchase_order = self.env['purchase.order'].search(extended_domain, limit=1)
+
+                if purchase_order:
+                    _logger.info(f"OC coincidente encontrada con búsqueda extendida: {purchase_order.name}")
+
             if not purchase_order:
                 ticket.message_post(
-                    body=f"PO number found ({po_number}), but it doesn't exist in the system"
+                    body=f"Se extrajo número de OC ({po_number}) del PDF, pero no existe en el sistema.<br/>"
+                         f"Formato original: {original_po}<br/>"
+                         f"Se buscaron las variaciones: {', '.join(search_variants)}<br/>"
+                         f"También se intentó con búsqueda extendida."
                 )
                 return False
 
             # Extract remaining invoice data
             invoice_data = self.extract_invoice_data(text_content, po_number)
-            
+
             # Create draft invoice
             invoice = self.create_draft_invoice(ticket, invoice_data, purchase_order, attachment)
-            
+
             return True if invoice else False
-            
+
         except Exception as e:
             ticket.message_post(
-                body=f"Error processing PDF attachment {attachment.name}: {str(e)}"
+                body=f"Error al procesar el PDF adjunto {attachment.name}: {str(e)}"
             )
             return False
-            
+
+    def extract_po_number(self, text_content):
+        """
+        Extract PO number from text content using multiple patterns
+        :param text_content: Text extracted from PDF
+        :return: Extracted PO number or False
+        """
+        # List of all possible PO patterns
+        patterns = [
+            # English patterns
+            r'(?:P\.O\.|PO|Purchase Order)[:\s#]*([A-Z0-9][-A-Z0-9]*)',
+            r'(?:P|#P|#PO)[:\s#]*([0-9]{4,})',
+
+            # Spanish patterns (OC = Orden de Compra)
+            r'(?:OC|OC#|OCN|OCN#)[:\s#]*([A-Z0-9][-A-Z0-9]*)',
+            r'(?:O\.C\.|O\.C\.#)[:\s#]*([A-Z0-9][-A-Z0-9]*)',
+
+            # Looking for standalone number patterns near keywords
+            r'(?:orden de compra|orden|purchase|compra|pedido)[^\n]*?([A-Z0-9][-A-Z0-9]{4,})',
+
+            # Specific patterns with "Pedido de compra"
+            r'pedido de compra[:\s#]*([A-Z0-9][-A-Z0-9]*)',
+            r'pedido de compra[^\n]*?#P([0-9]{4,})',
+            r'pedido de compra[^\n]*?#([0-9]{4,})',
+
+            # Last resort - look for patterns that might be PO numbers
+            r'(?<!\w)P([0-9]{4,})(?!\w)',
+            r'(?<!\w)#P([0-9]{4,})(?!\w)',
+            r'(?<!\w)#PO([0-9]{4,})(?!\w)',
+            r'(?<!\w)OC([0-9]{4,})(?!\w)'
+        ]
+
+        # Try each pattern until we find a match
+        for pattern in patterns:
+            match = re.search(pattern, text_content, re.IGNORECASE)
+            if match:
+                po_number = match.group(1).strip()
+                _logger.info(f"Encontrada coincidencia de OC con patrón {pattern}: {po_number}")
+                return po_number
+
+        return False
+
     def extract_invoice_data(self, text_content, po_number):
         """
         Extract invoice data from PDF text content
@@ -199,7 +372,7 @@ class InvoiceParser(models.Model):
             'iva_amount': iva_amount,
             'base_amount': total_amount - iva_amount
         }
-        
+
         return invoice_data
 
     def create_draft_invoice(self, ticket, invoice_data, purchase_order, attachment):
@@ -222,16 +395,16 @@ class InvoiceParser(models.Model):
 
             # Get partner from purchase order
             partner = purchase_order.partner_id
-            
+
             # If CUIT is available, verify partner
-            if invoice_data['cuit']:
+            if invoice_data.get('cuit'):
                 cuit_partner = self.env['res.partner'].search([
                     ('vat', '=', invoice_data['cuit'])
                 ], limit=1)
-                
+
                 if cuit_partner and cuit_partner.id != partner.id:
                     ticket.message_post(
-                        body=f"Warning: CUIT in invoice ({invoice_data['cuit']}) belongs to {cuit_partner.name}, but PO {invoice_data['po_number']} is for {partner.name}"
+                        body=f"Advertencia: El CUIT en la factura ({invoice_data['cuit']}) pertenece a {cuit_partner.name}, pero la OC {invoice_data['po_number']} es para {partner.name}"
                     )
 
             # Get IVA tax
@@ -275,12 +448,12 @@ class InvoiceParser(models.Model):
             # Log success in chatter
             ticket.message_post(
                 body=f"""
-                Draft invoice created successfully:
-                - Invoice number: {invoice.name}
-                - Partner: {partner.name}
-                - PO: {invoice_data['po_number']}
-                - Total Amount: ${invoice_data['total_amount']:,.2f}
-                - IVA Amount: ${invoice_data['iva_amount']:,.2f}
+                Factura en borrador creada exitosamente:
+                - Número de factura: {invoice.name}
+                - Proveedor: {partner.name}
+                - OC: {invoice_data['po_number']}
+                - Monto Total: ${invoice_data['total_amount']:,.2f}
+                - Monto IVA: ${invoice_data['iva_amount']:,.2f}
                 """
             )
 
@@ -288,7 +461,7 @@ class InvoiceParser(models.Model):
 
         except Exception as e:
             ticket.message_post(
-                body=f"Error creating invoice: {str(e)}"
+                body=f"Error al crear la factura: {str(e)}"
             )
             return False
 
@@ -298,20 +471,33 @@ class InvoiceParser(models.Model):
         :param pdf_file: BytesIO object containing PDF
         :return: extracted text
         """
-        resource_manager = PDFResourceManager()
-        output_string = StringIO()
-        codec = 'utf-8'
-        laparams = LAParams()
-        converter = TextConverter(resource_manager, output_string, codec=codec, laparams=laparams)
-        interpreter = PDFPageInterpreter(resource_manager, converter)
+        try:
+            resource_manager = PDFResourceManager()
+            output_string = StringIO()
+            codec = 'utf-8'
+            laparams = LAParams()
+            converter = TextConverter(resource_manager, output_string, codec=codec, laparams=laparams)
+            interpreter = PDFPageInterpreter(resource_manager, converter)
 
-        for page in PDFPage.get_pages(pdf_file, check_extractable=True):
-            interpreter.process_page(page)
+            # Reset file pointer to the beginning
+            pdf_file.seek(0)
 
-        text = output_string.getvalue()
+            for page in PDFPage.get_pages(pdf_file, check_extractable=True):
+                interpreter.process_page(page)
 
-        # Clean up
-        converter.close()
-        output_string.close()
+            text = output_string.getvalue()
 
-        return text
+            # Clean up
+            converter.close()
+            output_string.close()
+
+            # Reset file pointer to the beginning for potential reuse
+            pdf_file.seek(0)
+
+            return text
+
+        except Exception as e:
+            _logger.error(f"Error converting PDF to text: {str(e)}")
+            return ""
+
+
