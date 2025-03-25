@@ -109,4 +109,3 @@ odoo.define('bmi_invoice_parser.helpdesk_kanban', function (require) {
     viewRegistry.add('helpdesk_kanban_bmi', HelpdeskKanbanView);
 
     return HelpdeskKanbanView;
-});

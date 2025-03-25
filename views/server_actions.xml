@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Server Action to Process First 10 Tickets -->
+    <record id="action_process_first_10_tickets" model="ir.actions.server">
+        <field name="name">Procesar Primeros 10 Tickets</field>
+        <field name="model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_view_types">kanban,list</field>
+        <field name="state">code</field>
+        <field name="code">
+# Intentar obtener la etapa por XML ID primero
+facturas_nuevas_stage = env.ref('bmi_invoice_parser.stage_facturas_nuevas', raise_if_not_found=False)
+
+# Si no existe, buscar por nombre
+if not facturas_nuevas_stage:
+    facturas_nuevas_stage = env['helpdesk.stage'].search([
+        ('name', 'ilike', 'Facturas Nuevas')
+    ], limit=1)
+
+if facturas_nuevas_stage:
+    tickets = env['helpdesk.ticket'].search([
+        ('stage_id', '=', facturas_nuevas_stage.id)
+    ], limit=10)
+
+    if tickets:
+        tickets.procesar_facturas()
+        message = f'Se han procesado {len(tickets)} tickets'
+    else:
+        message = 'No se encontraron tickets con estado "Facturas Nuevas".'
+else:
+    message = 'No se pudo encontrar la etapa "Facturas Nuevas"'
+
+action = {
+    'type': 'ir.actions.client',
+    'tag': 'display_notification',
+    'params': {
+        'title': 'Tickets Procesados',
+        'message': message,
+        'sticky': False,
+        'type': 'success' if facturas_nuevas_stage else 'warning',
+    }
+}
+</field>
+    </record>
+
+    <!-- Acción para verificar manualmente PO# -->
+    <record id="action_verificar_po_manualmente" model="ir.actions.server">
+        <field name="name">Verificar PO# Manualmente</field>
+        <field name="model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_view_types">form</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    for record in records:
+        if record.x_po_number:
+            # Buscar la OC en el sistema por el número almacenado
+            po_number = record.x_po_number
+            purchase_order = env['purchase.order'].search([
+                '|', '|', '|', '|', '|', '|',
+                ('name', '=ilike', po_number),
+                ('name', '=ilike', 'P' + po_number),
+                ('name', '=ilike', '#P' + po_number),
+                ('name', '=ilike', '#PO' + po_number),
+                ('name', '=ilike', po_number.lstrip('P')),
+                ('name', '=ilike', po_number.lstrip('#P')),
+                ('name', '=ilike', po_number.lstrip('#PO'))
+            ], limit=1)
+
+            if purchase_order:
+                # Se encontró la OC, mover a otro estado
+                facturas_nuevas_stage = env.ref('bmi_invoice_parser.stage_facturas_nuevas', raise_if_not_found=False)
+                if not facturas_nuevas_stage:
+                    facturas_nuevas_stage = env['helpdesk.stage'].search([
+                        ('name', 'ilike', 'Facturas Nuevas')
+                    ], limit=1)
+
+                if facturas_nuevas_stage:
+                    record.write({'stage_id': facturas_nuevas_stage.id})
+                    record.message_post(body=f"""
+<strong>Verificación manual exitosa</strong><br/>
+<p>Se encontró la OC <strong>{purchase_order.name}</strong> en el sistema. Ticket movido a 'Facturas Nuevas' para reprocesar.</p>
+""")
+
+                    # Reprocesar el ticket
+                    record.procesar_facturas()
+
+                    message = f'Se encontró la OC {purchase_order.name} y se reprocesó el ticket.'
+                else:
+                    message = 'No se encontró el estado "Facturas Nuevas" para mover el ticket.'
+            else:
+                message = f'No se encontró ninguna OC en el sistema que coincida con {po_number}.'
+        else:
+            message = 'Este ticket no tiene un número de OC registrado.'
+
+        action = {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Verificación de PO#',
+                'message': message,
+                'sticky': False,
+                'type': 'info',
+            }
+        }
+</field>
+    </record>
+</odoo>

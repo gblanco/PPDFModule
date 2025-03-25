@@ -14,39 +14,44 @@
                         class="oe_highlight"
                         groups="helpdesk.group_helpdesk_user"/>
             </header>
+            <!-- Agregar campo visible para el número de PO -->
+            <field name="stage_id" position="after">
+                <field name="x_po_number" readonly="1" attrs="{'invisible': [('x_po_number', '=', False)]}" groups="helpdesk.group_helpdesk_user"/>
+            </field>
         </field>
     </record>
 
-    <!-- Server Action to Process First 10 Tickets -->
-    <record id="action_process_first_10_tickets" model="ir.actions.server">
-        <field name="name">Procesar Primeros 10 Tickets</field>
-        <field name="model_id" ref="helpdesk.model_helpdesk_ticket"/>
-        <field name="binding_model_id" ref="helpdesk.model_helpdesk_ticket"/>
-        <field name="binding_view_types">kanban,list</field>
-        <field name="state">code</field>
-        <field name="code">
-facturas_nuevas_stage = env['helpdesk.stage'].search([('name', '=', 'Facturas nuevas')], limit=1)
-if facturas_nuevas_stage:
-    tickets = env['helpdesk.ticket'].search([
-        ('stage_id', '=', facturas_nuevas_stage.id)
-    ], limit=10)
+    <!-- Vista de lista personalizada para tickets de PO# Inexistente -->
+    <record id="view_helpdesk_ticket_tree_po_inexistente" model="ir.ui.view">
+        <field name="name">helpdesk.ticket.tree.po.inexistente</field>
+        <field name="model">helpdesk.ticket</field>
+        <field name="arch" type="xml">
+            <tree string="Tickets con PO# Inexistente">
+                <field name="name"/>
+                <field name="x_po_number"/>
+                <field name="create_date"/>
+                <field name="partner_id"/>
+                <field name="user_id"/>
+                <field name="stage_id"/>
+                <field name="priority" widget="priority"/>
+            </tree>
+        </field>
+    </record>
 
-    if tickets:
-        tickets.procesar_facturas()
-        message = f'Se han procesado {len(tickets)} tickets'
-    else:
-        message = 'No se encontraron tickets con estado "Facturas nuevas".'
-
-    action = {
-        'type': 'ir.actions.client',
-        'tag': 'display_notification',
-        'params': {
-            'title': 'Tickets Procesados',
-            'message': message,
-            'sticky': False,
-            'type': 'success',
-        }
-    }
-</field>
+    <!-- Añadir botón para verificar PO manualmente en la vista formulario -->
+    <record id="view_helpdesk_ticket_form_po_inexistente" model="ir.ui.view">
+        <field name="name">helpdesk.ticket.form.po.inexistente</field>
+        <field name="model">helpdesk.ticket</field>
+        <field name="inherit_id" ref="view_helpdesk_ticket_form_inherit_bmi"/>
+        <field name="arch" type="xml">
+            <xpath expr="//button[@name='procesar_facturas']" position="after">
+                <button name="%(action_verificar_po_manualmente)d"
+                        type="action"
+                        string="Verificar PO# Manualmente"
+                        attrs="{'invisible': [('x_po_number', '=', False)]}"
+                        class="btn-secondary"
+                        groups="helpdesk.group_helpdesk_user"/>
+            </xpath>
+        </field>
     </record>
 </odoo>

@@ -29,19 +29,30 @@ class InvoiceParser(models.Model):
         :return: Boolean indicating success
         """
         if not self:
-            # Get all tickets in 'Facturas nuevas' state for 'Pago a Proveedores' team
+            # Get the 'Facturas Nuevas' stage
+            facturas_nuevas_stage = self.env.ref('bmi_invoice_parser.stage_facturas_nuevas', raise_if_not_found=False)
+            if not facturas_nuevas_stage:
+                facturas_nuevas_stage = self.env['helpdesk.stage'].search([
+                    ('name', 'ilike', 'Facturas Nuevas')
+                ], limit=1)
+
+                if not facturas_nuevas_stage:
+                    _logger.error("No se encontró la etapa 'Facturas Nuevas'. No se pueden procesar tickets.")
+                    return False
+
+            # Intentar buscar por equipo si está configurado
             pago_proveedores_team = self.env['helpdesk.team'].search([
+                '|',
                 ('alias_name', '=', 'proveedores'),
-                ('alias_domain', '=', 'bmisa.odoo.com')
+                ('name', 'ilike', 'Pago a Proveedores')
             ], limit=1)
 
-            if not pago_proveedores_team:
-                return False
+            # Construir dominio de búsqueda de tickets
+            domain = [('stage_id', '=', facturas_nuevas_stage.id)]
+            if pago_proveedores_team:
+                domain.append(('team_id', '=', pago_proveedores_team.id))
 
-            tickets = self.search([
-                ('team_id', '=', pago_proveedores_team.id),
-                ('stage_id.name', '=', 'Facturas Nuevas')
-            ])
+            tickets = self.search(domain)
         else:
             tickets = self
 
@@ -59,29 +70,39 @@ class InvoiceParser(models.Model):
 
         _logger.info(f"Procesando {len(tickets)} tickets")
 
-        # Get stage IDs for status changes
-        sin_pdf_stage = self.env['helpdesk.stage'].search([
-            ('name', '=', 'Tickets sin PDF')
-        ], limit=1)
-
-        sin_po_stage = self.env['helpdesk.stage'].search([
-            ('name', '=', 'PDF sin PO#')
-        ], limit=1)
-
-        # If stages are not found, try to create them
+        # Get stage IDs for status changes - use our module's XML IDs to ensure we get the right stages
+        sin_pdf_stage = self.env.ref('bmi_invoice_parser.stage_tickets_sin_pdf', raise_if_not_found=False)
         if not sin_pdf_stage:
-            sin_pdf_stage = self.env['helpdesk.stage'].create({
-                'name': 'Tickets sin PDF',
-                'sequence': 2,
-            })
-            self._cr.commit()  # Commit to ensure stage is created
+            sin_pdf_stage = self.env['helpdesk.stage'].search([
+                ('name', '=', 'Tickets sin PDF')
+            ], limit=1)
+            if not sin_pdf_stage:
+                sin_pdf_stage = self.env['helpdesk.stage'].create({
+                    'name': 'Tickets sin PDF',
+                    'sequence': 2,
+                })
 
+        sin_po_stage = self.env.ref('bmi_invoice_parser.stage_pdf_sin_po', raise_if_not_found=False)
         if not sin_po_stage:
-            sin_po_stage = self.env['helpdesk.stage'].create({
-                'name': 'PDF sin PO#',
-                'sequence': 3,
-            })
-            self._cr.commit()  # Commit to ensure stage is created
+            sin_po_stage = self.env['helpdesk.stage'].search([
+                ('name', '=', 'PDF sin PO#')
+            ], limit=1)
+            if not sin_po_stage:
+                sin_po_stage = self.env['helpdesk.stage'].create({
+                    'name': 'PDF sin PO#',
+                    'sequence': 3,
+                })
+
+        po_inexistente_stage = self.env.ref('bmi_invoice_parser.stage_po_inexistente', raise_if_not_found=False)
+        if not po_inexistente_stage:
+            po_inexistente_stage = self.env['helpdesk.stage'].search([
+                ('name', '=', 'PO# Inexistente')
+            ], limit=1)
+            if not po_inexistente_stage:
+                po_inexistente_stage = self.env['helpdesk.stage'].create({
+                    'name': 'PO# Inexistente',
+                    'sequence': 4,
+                })
 
         for ticket in tickets:
             has_pdf = False
@@ -122,14 +143,20 @@ class InvoiceParser(models.Model):
             else:
                 # Process each PDF attachment
                 po_found = False
+                po_inexistente = False
+
                 for attachment in pdf_attachments:
-                    result = self.process_invoice_pdf(ticket, attachment, sin_po_stage)
+                    result, is_po_inexistente = self.process_invoice_pdf(ticket, attachment, sin_po_stage,
+                                                                         po_inexistente_stage)
                     if result:
                         po_found = True
                         break
+                    elif is_po_inexistente:
+                        po_inexistente = True
+                        break
 
-                # If no PO was found in any of the PDFs, move to 'PDF sin PO#'
-                if not po_found and ticket.stage_id.id != sin_po_stage.id:
+                # Si no se encontró PO y no se marcó como PO# inexistente, mover a 'PDF sin PO#'
+                if not po_found and not po_inexistente and ticket.stage_id.id != sin_po_stage.id:
                     ticket.write({
                         'stage_id': sin_po_stage.id
                     })
@@ -139,13 +166,14 @@ class InvoiceParser(models.Model):
 
         return True
 
-    def process_invoice_pdf(self, ticket, attachment, sin_po_stage):
+    def process_invoice_pdf(self, ticket, attachment, sin_po_stage, po_inexistente_stage):
         """
         Process a PDF invoice attachment
         :param ticket: helpdesk.ticket record
         :param attachment: ir.attachment record
         :param sin_po_stage: helpdesk.stage record for 'PDF sin PO#'
-        :return: Boolean indicating success
+        :param po_inexistente_stage: helpdesk.stage record for 'PO# Inexistente'
+        :return: Tuple (Boolean indicating success, Boolean indicating if PO# inexistente)
         """
         try:
             # Get PDF content
@@ -185,7 +213,17 @@ class InvoiceParser(models.Model):
                     # Extract invoice data and create invoice
                     invoice_data = self.extract_invoice_data(text_content, po_number)
                     invoice = self.create_draft_invoice(ticket, invoice_data, purchase_order, attachment)
-                    return True if invoice else False
+                    return (True if invoice else False, False)
+                else:
+                    # Mover al estado "PO# Inexistente" si se encuentra pero no existe
+                    ticket.write({
+                        'stage_id': po_inexistente_stage.id,
+                        'x_po_number': f"P{pedido_po}"  # Guardar el número de PO aunque no exista
+                    })
+                    ticket.message_post(
+                        body=f"Ticket movido a 'PO# Inexistente' - Se encontró el número de OC (#P{pedido_po}) en el PDF pero no existe en el sistema."
+                    )
+                    return (False, True)
 
             # Extract PO number
             po_number = self.extract_po_number(text_content)
@@ -196,7 +234,7 @@ class InvoiceParser(models.Model):
                     body=f"No se encontró número de OC en el PDF: {attachment.name}<br/>"
                          f"Por favor, verifique si esta factura contiene una referencia de orden de compra."
                 )
-                return False
+                return (False, False)
 
             original_po = po_number
 
@@ -274,13 +312,19 @@ class InvoiceParser(models.Model):
                     _logger.info(f"OC coincidente encontrada con búsqueda extendida: {purchase_order.name}")
 
             if not purchase_order:
+                # Cambiado: Mover el ticket al estado "PO# Inexistente" en lugar de solo enviar un mensaje
+                ticket.write({
+                    'stage_id': po_inexistente_stage.id,
+                    'x_po_number': original_po  # Guardar el número de PO aunque no exista
+                })
                 ticket.message_post(
-                    body=f"Se extrajo número de OC ({po_number}) del PDF, pero no existe en el sistema.<br/>"
+                    body=f"Ticket movido a 'PO# Inexistente'<br/>"
+                         f"Se extrajo número de OC ({po_number}) del PDF, pero no existe en el sistema.<br/>"
                          f"Formato original: {original_po}<br/>"
                          f"Se buscaron las variaciones: {', '.join(search_variants)}<br/>"
                          f"También se intentó con búsqueda extendida."
                 )
-                return False
+                return (False, True)
 
             # Extract remaining invoice data
             invoice_data = self.extract_invoice_data(text_content, po_number)
@@ -288,13 +332,13 @@ class InvoiceParser(models.Model):
             # Create draft invoice
             invoice = self.create_draft_invoice(ticket, invoice_data, purchase_order, attachment)
 
-            return True if invoice else False
+            return (True if invoice else False, False)
 
         except Exception as e:
             ticket.message_post(
                 body=f"Error al procesar el PDF adjunto {attachment.name}: {str(e)}"
             )
-            return False
+            return (False, False)
 
     def extract_po_number(self, text_content):
         """
@@ -499,5 +543,3 @@ class InvoiceParser(models.Model):
         except Exception as e:
             _logger.error(f"Error converting PDF to text: {str(e)}")
             return ""
-
-
