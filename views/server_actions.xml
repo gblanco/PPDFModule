@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <data>
     <!-- Server Action to Process First 10 Tickets -->
     <record id="action_process_first_10_tickets" model="ir.actions.server">
         <field name="name">Procesar Primeros 10 Tickets</field>
@@ -105,4 +106,5 @@ if records:
         }
 </field>
     </record>
+	</data>
 </odoo>
