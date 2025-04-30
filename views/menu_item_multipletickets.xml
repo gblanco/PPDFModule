@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Add a menu item for the processing action -->
+    <menuitem id="menu_procesar_facturas"
+              name="Procesar Primeros 10 Tickets"
+              parent="helpdesk.helpdesk_menu_config"
+              action="action_process_first_10_tickets"
+              sequence="50"
+              groups="helpdesk.group_helpdesk_user"/>
+
+    <!-- Add a direct menu item for the action (will appear in the More menu) -->
+    <record id="action_menu_procesar_facturas" model="ir.actions.server">
+        <field name="name">Procesar Facturas Nuevas</field>
+        <field name="model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_model_id" ref="helpdesk.model_helpdesk_ticket"/>
+        <field name="binding_view_types">kanban,list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+# Intentar obtener la etapa por XML ID primero
+facturas_nuevas_stage = env.ref('bmi_invoice_parser.stage_facturas_nuevas', raise_if_not_found=False)
+
+# Si no existe, buscar por nombre
+if not facturas_nuevas_stage:
+    facturas_nuevas_stage = env['helpdesk.stage'].search([
+        ('name', 'ilike', 'Facturas Nuevas')
+    ], limit=1)
+
+if facturas_nuevas_stage:
+    tickets = env['helpdesk.ticket'].search([
+        ('stage_id', '=', facturas_nuevas_stage.id)
+    ], limit=10)
+
+    if tickets:
+        tickets.procesar_facturas()
+        message = f'Se han procesado {len(tickets)} tickets'
+    else:
+        message = 'No se encontraron tickets con estado "Facturas Nuevas"'
+else:
+    message = 'No se pudo encontrar la etapa "Facturas Nuevas"'
+
+action = {
+    'type': 'ir.actions.client',
+    'tag': 'display_notification',
+    'params': {
+        'title': 'Tickets Procesados',
+        'message': message,
+        'sticky': False,
+        'type': 'success' if facturas_nuevas_stage else 'warning',
+    }
+}
+</field>
+    </record>
+</odoo>

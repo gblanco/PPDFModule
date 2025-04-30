@@ -2,7 +2,6 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
-
 def post_init_hook(cr, registry):
     """
     Post-init hook to ensure required helpdesk stages exist.
@@ -36,13 +35,11 @@ def post_init_hook(cr, registry):
         stage = env['helpdesk.stage'].search([('name', '=', name)], limit=1)
         if stage:
             xml_id = f"bmi_invoice_parser.stage_{'_'.join(name.lower().split())}"
-            # Check if this XML ID already exists
             if not env['ir.model.data'].search([
                 ('model', '=', 'helpdesk.stage'),
                 ('res_id', '=', stage.id),
                 ('module', '=', 'bmi_invoice_parser')
             ]):
-                # Create the XML ID manually
                 env['ir.model.data'].create({
                     'name': f"stage_{'_'.join(name.lower().split())}",
                     'model': 'helpdesk.stage',
@@ -54,7 +51,5 @@ def post_init_hook(cr, registry):
 
 
 def uninstall_hook(cr, registry):
-    """
-    Clean up any data created by this module.
-    """
+    """Clean up any data created by this module."""
     pass

@@ -1,24 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <data noupdate="1">
+    <data noupdate="0">
         <record id="stage_facturas_nuevas" model="helpdesk.stage">
             <field name="name">Facturas Nuevas</field>
             <field name="sequence">1</field>
+            <field name="team_ids" eval="[(4, 5)]"/>
         </record>
 
         <record id="stage_tickets_sin_pdf" model="helpdesk.stage">
             <field name="name">Tickets sin PDF</field>
             <field name="sequence">2</field>
+            <field name="team_ids" eval="[(4, 5)]"/>
         </record>
 
         <record id="stage_pdf_sin_po" model="helpdesk.stage">
             <field name="name">PDF sin PO#</field>
             <field name="sequence">3</field>
+            <field name="team_ids" eval="[(4, 5)]"/>
         </record>
 
         <record id="stage_po_inexistente" model="helpdesk.stage">
             <field name="name">PO# Inexistente</field>
             <field name="sequence">4</field>
+            <field name="team_ids" eval="[(4, 5)]"/>
+        </record>
+        <record id="stage_fact_vinculada" model="helpdesk.stage">
+            <field name="name">Factura Vinculada</field>
+            <field name="sequence">5</field>
+            <field name="team_ids" eval="[(4, 5)]"/>
+        </record>
+        <record id="stage_fact_duplicadas" model="helpdesk.stage">
+            <field name="name">Facturas Duplicadas</field>
+            <field name="sequence">6</field>
+            <field name="team_ids" eval="[(4, 5)]"/>
         </record>
     </data>
 </odoo>

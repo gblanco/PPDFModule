@@ -38,7 +38,7 @@
         </field>
     </record>
 
-    <!-- Añadir botón para verificar PO manualmente en la vista formulario -->
+        <!-- Añadir botón para verificar PO manualmente en la vista formulario -->
     <record id="view_helpdesk_ticket_form_po_inexistente" model="ir.ui.view">
         <field name="name">helpdesk.ticket.form.po.inexistente</field>
         <field name="model">helpdesk.ticket</field>
@@ -54,4 +54,5 @@
             </xpath>
         </field>
     </record>
+
 </odoo>

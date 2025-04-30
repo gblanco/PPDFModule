@@ -1,6 +1,6 @@
 {
     "name": "BMI Invoice Parser",
-    "version": "16.0.1.0.12",
+    "version": "16.0.1.0.27",
     "category": "Accounting",
     "summary": "Procesa Facturas recibidas en Helpdesk para Pago a Proveedores",
     "description": """
@@ -14,9 +14,10 @@
     "data": [
         "security/ir.model.access.csv",
         "views/server_actions.xml",
+        "views/server_actions_multiple_tickets.xml",
         "views/invoice_parser_views.xml",
         "views/menu_item.xml",
-        "data/ir_cron.xml",
+        "views/menu_item_multipletickets.xml",
     ],
     "assets": {
         "web.assets_backend": [
@@ -31,6 +32,4 @@
     "application": False,
     "auto_install": False,
     "license": "LGPL-3",
-    "post_init_hook": "hooks.post_init_hook",
-    "uninstall_hook": "hooks.uninstall_hook",
 }
